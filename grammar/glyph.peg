@@ -1,0 +1,421 @@
+# ===========================================================================
+# Glyph — Formal PEG Grammar v0.1.0
+# Phase A: Language Specification
+#
+# Design principles applied:
+#   L1. Every token carries semantic load
+#   L2. Defaults eliminate the common case
+#   L3. Natural language alignment (BPE-optimized keywords)
+#   L4. The type system is the program
+#   L5. Deterministic compilation
+#
+# Notation: PEG (Parsing Expression Grammar)
+#   /   = ordered choice
+#   *   = zero or more
+#   +   = one or more
+#   ?   = optional
+#   &   = positive lookahead
+#   !   = negative lookahead
+#   'x' = literal string
+#   [x] = character class
+#   .   = any character
+#   INDENT / DEDENT = significant whitespace (2-space fixed)
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# 1. Top-Level Structure
+# ---------------------------------------------------------------------------
+
+Program
+  <- Spacing (TopLevelBlock Spacing)* EOF
+
+TopLevelBlock
+  <- TypeDef
+   / ModelDef
+   / TransitionDef
+   / ServiceDef
+   / RulesDef
+   / GuardDef
+   / PipelineDef
+   / TaskDef
+   / EscapeBlock
+
+# ---------------------------------------------------------------------------
+# 2. Type Definitions — L4: types as spec/validation/schema/docs
+# ---------------------------------------------------------------------------
+
+TypeDef
+  <- 'type' _ TypeName ':' _ TypeExpr Newline
+
+TypeExpr
+  <- BaseType (_ TypeConstraint)*
+
+BaseType
+  <- 'int' / 'float' / 'text' / 'bool' / 'uuid' / 'timestamp' / 'date'
+   / 'time' / 'json' / 'bytes' / TypeName
+
+TypeConstraint
+  <- '>=' _ NumericLiteral
+   / '<=' _ NumericLiteral
+   / '>' _ NumericLiteral
+   / '<' _ NumericLiteral
+   / '~' _ PatternName
+   / RangeLiteral
+
+RangeLiteral
+  <- NumericLiteral '..' NumericLiteral
+
+PatternName
+  <- 'email' / 'url' / 'phone' / 'slug' / 'ip' / 'iso_date' / Identifier
+
+# ---------------------------------------------------------------------------
+# 3. Model Definitions — L4 + Rust ownership annotations
+# ---------------------------------------------------------------------------
+
+ModelDef
+  <- 'model' _ ModelName (_ ClassificationAnnotation)? Newline
+     INDENT (FieldDef Newline)+ DEDENT
+
+ClassificationAnnotation
+  <- '[' _ ClassificationItem (_ ',' _ ClassificationItem)* _ ']'
+
+ClassificationItem
+  <- ClassificationLevel
+   / OwnershipClause
+
+ClassificationLevel
+  <- 'public' / 'internal' / 'confidential' / 'restricted'
+
+OwnershipClause
+  <- 'owned' _ 'by' _ Identifier
+
+FieldDef
+  <- FieldName ':' _ FieldType (_ FieldModifier)*
+
+FieldType
+  <- RelationType
+   / UnionType
+   / BaseType
+   / TypeName
+
+RelationType
+  <- '->' _ ModelName
+
+UnionType
+  <- UnionMember (_ '|' _ UnionMember)+
+
+UnionMember
+  <- Identifier / StringLiteral
+
+FieldModifier
+  <- 'key'
+   / 'unique'
+   / 'optional'
+   / 'index'
+   / DefaultValue
+   / TypeConstraint
+
+DefaultValue
+  <- '=' _ (Literal / 'now' / 'uuid_generate' / Identifier)
+
+# ---------------------------------------------------------------------------
+# 4. Transition Blocks — Erlang pattern matching for state machines
+# ---------------------------------------------------------------------------
+
+TransitionDef
+  <- 'transition' _ QualifiedField Newline
+     INDENT (TransitionRule Newline)+ DEDENT
+
+TransitionRule
+  <- TransitionPattern ':' _ TransitionAction (_ ',' _ TransitionAction)*
+
+TransitionPattern
+  <- StateRef _ '->' _ StateRef
+
+StateRef
+  <- '_' / Identifier
+
+TransitionAction
+  <- 'require' _ Identifier
+   / 'deny'
+   / 'within' _ Duration
+   / 'notify' _ Identifier
+   / 'log'
+   / Identifier
+
+Duration
+  <- NumericLiteral _ TimeUnit
+
+TimeUnit
+  <- 'seconds' / 'minutes' / 'hours' / 'days' / 'weeks' / 'months'
+   / 'second' / 'minute' / 'hour' / 'day' / 'week' / 'month'
+
+# ---------------------------------------------------------------------------
+# 5. Service Definitions — Ruby convention over configuration
+# ---------------------------------------------------------------------------
+
+ServiceDef
+  <- 'service' _ ServiceName Newline
+     INDENT (ServiceAction Newline)+ DEDENT
+
+ServiceAction
+  <- ServiceVerb _ ModelName (_ ServiceClause)* ':' _ ServiceModifier
+       (_ ',' _ ServiceModifier)*
+   / 'transition' _ QualifiedField
+
+ServiceVerb
+  <- 'create' / 'read' / 'update' / 'delete' / 'list' / 'search'
+   / 'archive' / 'restore' / 'export' / 'import'
+
+ServiceClause
+  <- 'by' _ FieldList
+   / 'where' _ FieldList
+
+FieldList
+  <- Identifier (_ ',' _ Identifier)*
+
+ServiceModifier
+  <- 'auth'
+   / 'public'
+   / 'admin'
+   / RoleRef
+   / RateLimit
+   / PageSize
+   / 'cache' _ Duration
+
+RoleRef
+  <- 'role' _ Identifier
+
+RateLimit
+  <- 'limit' _ NumericLiteral '/' TimeUnit
+
+PageSize
+  <- 'page' _ NumericLiteral
+
+# ---------------------------------------------------------------------------
+# 6. Rules Definitions — Prolog declarative constraints
+# ---------------------------------------------------------------------------
+
+RulesDef
+  <- 'rules' _ RulesName Newline
+     INDENT (Rule Newline)+ DEDENT
+
+Rule
+  <- DenyRule / RequireRule / LimitRule / ConditionalRule
+
+DenyRule
+  <- 'deny' _ ServiceVerb _ ModelName
+
+RequireRule
+  <- QualifiedField _ CompOp _ Literal _ 'requires' _ Identifier
+
+LimitRule
+  <- QualifiedField _ '=' _ Literal _ 'limits' _ NumericLiteral _
+     Identifier '/' TimeUnit
+
+ConditionalRule
+  <- 'when' _ Condition _ 'then' _ RuleAction
+
+Condition
+  <- QualifiedField _ CompOp _ Literal
+   / QualifiedField _ 'is' _ ('set' / 'unset')
+   / Condition _ ('and' / 'or') _ Condition
+   / '(' Condition ')'
+
+RuleAction
+  <- 'require' _ Identifier
+   / 'deny'
+   / 'notify' _ Identifier
+   / 'escalate' _ 'to' _ Identifier
+   / 'log'
+
+CompOp
+  <- '=' / '!=' / '>=' / '<=' / '>' / '<'
+
+# ---------------------------------------------------------------------------
+# 7. Guard Blocks — §5 guardrails co-located with code
+# ---------------------------------------------------------------------------
+
+GuardDef
+  <- 'guard' _ GuardName Newline
+     INDENT (GuardDirective Newline)+ DEDENT
+
+GuardDirective
+  <- BudgetDirective
+   / ClassifyDirective
+   / EscalateDirective
+   / SanitizeDirective
+   / TimeoutDirective
+   / RetryDirective
+   / AuditDirective
+
+BudgetDirective
+  <- 'budget:' _ NumericLiteral '/' Identifier
+
+ClassifyDirective
+  <- 'classify:' _ ClassificationLevel
+
+EscalateDirective
+  <- 'escalate' _ 'above' _ NumericLiteral _ 'to' _ Identifier
+
+SanitizeDirective
+  <- 'sanitize:' _ ('all' / FieldList)
+
+TimeoutDirective
+  <- 'timeout:' _ Duration
+
+RetryDirective
+  <- 'retry:' _ NumericLiteral (_ 'then' _ ('escalate' / 'fail' / 'skip'))?
+
+AuditDirective
+  <- 'audit:' _ ('all' / 'mutations' / 'reads' / 'none')
+
+# ---------------------------------------------------------------------------
+# 8. Pipeline Definitions — APL-inspired operator composition
+# ---------------------------------------------------------------------------
+
+PipelineDef
+  <- 'pipeline' _ PipelineName Newline
+     INDENT PipelineTrigger Newline
+     PipelineSteps Newline
+     (PipelineErrorHandler Newline)? DEDENT
+
+PipelineTrigger
+  <- 'when' _ QualifiedField _ '->' _ Identifier
+   / 'when' _ EventName
+   / 'every' _ Duration
+   / 'on' _ ServiceVerb _ ModelName
+
+PipelineSteps
+  <- PipelineStep (_ '->' _ PipelineStep)+
+
+PipelineStep
+  <- Identifier (_ Identifier)*
+
+PipelineErrorHandler
+  <- 'on' _ 'failure:' _ ErrorStrategy
+
+ErrorStrategy
+  <- 'retry' _ NumericLiteral (_ 'then' _ ('escalate' / 'fail' / 'skip' / 'rollback'))?
+   / 'escalate'
+   / 'fail'
+   / 'skip'
+   / 'rollback'
+
+# ---------------------------------------------------------------------------
+# 9. Task Definitions — Homoiconic task graph entries
+# ---------------------------------------------------------------------------
+
+TaskDef
+  <- 'task' _ TaskName (_ '[' Priority ']')? Newline
+     INDENT (TaskField Newline)+ DEDENT
+
+Priority
+  <- 'critical' / 'high' / 'normal' / 'low'
+
+TaskField
+  <- 'do:' _ TextBlock
+   / 'accept:' _ TextBlock
+   / 'context:' _ ContextSpec
+   / 'route:' _ RoutingClass
+   / 'parent:' _ TaskRef
+   / 'depends:' _ TaskRefList
+   / 'budget:' _ NumericLiteral
+
+ContextSpec
+  <- Identifier (_ ',' _ Identifier)*
+
+RoutingClass
+  <- 'strategist' / 'architect' / 'executor' / 'reviewer' / 'utility'
+
+TaskRef
+  <- Identifier ('.' Identifier)*
+
+TaskRefList
+  <- TaskRef (_ ',' _ TaskRef)*
+
+TextBlock
+  <- SingleLineText / MultiLineText
+
+SingleLineText
+  <- (!Newline .)+
+
+MultiLineText
+  <- '|' Newline INDENT ((!DEDENT .)+ Newline)+ DEDENT
+
+# ---------------------------------------------------------------------------
+# 10. Escape Hatch — Embedded TypeScript for the ~20% case
+# ---------------------------------------------------------------------------
+
+EscapeBlock
+  <- '```ts' Newline EscapeContent '```' Newline
+
+EscapeContent
+  <- (!('```') .)*
+
+# ---------------------------------------------------------------------------
+# 11. Shared Primitives
+# ---------------------------------------------------------------------------
+
+QualifiedField
+  <- ModelName '.' FieldName
+
+Identifier
+  <- [a-z_] [a-z0-9_]*
+
+TypeName
+  <- [A-Z] [a-zA-Z0-9]*
+
+ModelName     <- TypeName
+FieldName     <- Identifier
+ServiceName   <- TypeName
+RulesName     <- TypeName
+GuardName     <- TypeName
+PipelineName  <- TypeName
+TaskName      <- TypeName / Identifier
+EventName     <- Identifier ('.' Identifier)*
+
+# ---------------------------------------------------------------------------
+# 12. Literals
+# ---------------------------------------------------------------------------
+
+Literal
+  <- NumericLiteral / StringLiteral / BoolLiteral / 'null'
+
+NumericLiteral
+  <- '-'? [0-9]+ ('.' [0-9]+)?
+
+StringLiteral
+  <- '"' (!'"' .)* '"'
+   / "'" (!"'" .)* "'"
+
+BoolLiteral
+  <- 'true' / 'false'
+
+# ---------------------------------------------------------------------------
+# 13. Whitespace and Structure (Python-style, fixed 2-space)
+# ---------------------------------------------------------------------------
+
+Spacing
+  <- (Whitespace / Comment / BlankLine)*
+
+Whitespace
+  <- [ \t]
+
+BlankLine
+  <- Newline &Newline
+
+Newline
+  <- '\r\n' / '\n' / '\r'
+
+Comment
+  <- '#' (!Newline .)* Newline
+
+# INDENT/DEDENT: handled by lexer preprocessor.
+# Converts 2-space indentation changes into tokens before parsing.
+INDENT <- '__INDENT__'
+DEDENT <- '__DEDENT__'
+
+_ <- [ \t]+                        # required horizontal whitespace
+
+EOF <- !.

@@ -1,0 +1,80 @@
+# User Authentication Service — Glyph example
+# Demonstrates: tasks, escape hatches, more complex models
+
+type Password: text 8..128
+type SessionToken: text ~ slug
+
+model User [confidential]
+  id: uuid key
+  email: text ~ email unique
+  password_hash: text
+  role: admin | staff | member = member
+  active: bool = true
+  last_login: timestamp optional
+  created: timestamp = now
+
+model Session [internal, owned by user]
+  id: uuid key
+  user: -> User
+  token: SessionToken unique
+  expires: timestamp
+  ip: text ~ ip optional
+  created: timestamp = now
+
+transition User.active
+  true -> false: require admin, log
+  false -> true: require admin, log
+  _ -> _: deny
+
+service Auth
+  create User: public, limit 10/minute
+  read User by id: auth
+  update User by id: auth, role admin
+  delete User by id: admin
+  list User where role, active: admin, page 25
+
+rules AuthPolicy
+  deny delete User
+  when User.role = admin then require board_approval
+
+guard AuthService
+  budget: 3.00/task
+  classify: confidential
+  sanitize: password_hash
+  timeout: 30 seconds
+  retry: 2 then fail
+  audit: all
+
+pipeline OnUserCreated
+  when create User
+  validate -> hash_password -> send_welcome_email -> log
+  on failure: rollback
+
+# Escape hatch for custom JWT logic
+```ts
+import { User, Session } from './generated';
+import jwt from 'jsonwebtoken';
+
+export function generateToken(user: User): string {
+  return jwt.sign(
+    { sub: user.id, role: user.role },
+    process.env.JWT_SECRET!,
+    { expiresIn: '24h' }
+  );
+}
+
+export function validateToken(token: string): { sub: string; role: string } | null {
+  try {
+    return jwt.verify(token, process.env.JWT_SECRET!) as any;
+  } catch {
+    return null;
+  }
+}
+```
+
+task BuildAuthService [high]
+  do: Implement user authentication with JWT tokens
+  accept: All CRUD operations work, JWT issued on login, sessions tracked
+  context: auth, security, user_management
+  route: executor
+  budget: 5.00

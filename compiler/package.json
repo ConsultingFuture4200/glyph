@@ -1,0 +1,14 @@
+{
+  "name": "@glyph/compiler",
+  "version": "0.1.0",
+  "description": "Glyph language compiler — Phase B: Core Data and Service Layer",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "glyphc": "src/cli.js"
+  },
+  "scripts": {
+    "test": "node tests/run_tests.js",
+    "compile": "node src/cli.js"
+  }
+}

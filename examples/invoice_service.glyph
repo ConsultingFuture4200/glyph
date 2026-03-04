@@ -1,0 +1,47 @@
+# Invoice Service — Glyph canonical example
+# From: Phase 4 Proposal, §Syntax Example
+
+type Money: int >= 0
+type Email: text ~ email
+
+model Customer [internal]
+  id: uuid key
+  name: text 1..200
+  email: Email unique
+  tier: free | pro | enterprise = free
+  created: timestamp = now
+
+model Invoice [confidential, owned by customer]
+  id: uuid key
+  customer: -> Customer
+  amount: Money
+  status: draft | sent | paid | void = draft
+  created: timestamp = now
+
+transition Invoice.status
+  draft -> sent: require all_fields_present
+  sent -> paid: require payment_confirmed
+  paid -> void: require admin, within 30 days
+  _ -> _: deny
+
+service Invoices
+  create Invoice: auth, limit 100/min
+  read Invoice by id: auth
+  list Invoice where customer, status: auth, page 50
+  transition Invoice.status
+
+rules InvoicePolicy
+  Invoice.amount > 10000 requires board_approval
+  Customer.tier = free limits 5 invoices/month
+  deny delete Invoice
+
+guard InvoiceService
+  budget: 5.00/task
+  classify: confidential
+  escalate above 10.00 to strategist
+  sanitize: all
+
+pipeline OnInvoicePaid
+  when Invoice.status -> paid
+  validate -> credit_balance -> generate_receipt -> notify customer
+  on failure: retry 3 then escalate

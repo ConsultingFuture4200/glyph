@@ -1,0 +1,101 @@
+type PackageName: text ~ slug
+type SemVer: text 1..20
+type Email: text ~ email
+type Url: text ~ url
+type ShortText: text 1..200
+type LongText: text 1..5000
+
+model Author [internal]
+  id: uuid key
+  name: ShortText
+  email: Email unique
+  created: timestamp = now
+
+model Package [internal, owned by author]
+  id: uuid key
+  name: PackageName unique
+  description: LongText optional
+  author: -> Author
+  license: mit | isc | apache2 | gpl3 | bsd2 = mit
+  homepage: Url optional
+  repository: Url optional
+  status: active | deprecated | unpublished = active
+  created: timestamp = now
+
+model PackageVersion [confidential, owned by author]
+  id: uuid key
+  package: -> Package
+  version: SemVer
+  main: ShortText optional
+  type: module | commonjs = module
+  tarball_url: Url
+  download_count: int >= 0
+  published_at: timestamp = now
+
+model Dependency [internal]
+  id: uuid key
+  version: -> PackageVersion
+  dep_name: PackageName
+  dep_range: SemVer
+  kind: production | dev | peer | optional = production
+
+transition Package.status
+  active -> deprecated: require author, log
+  deprecated -> active: require author, log
+  active -> unpublished: require admin, within 72 hours
+  _ -> _: deny
+
+service Packages
+  create Package: auth, limit 50/min
+  read Package by id: auth
+  read Package by name: auth
+  list Package where author, status: auth, page 25
+  search Package: public, page 50
+  update Package: auth
+  transition Package.status
+
+service Versions
+  create PackageVersion: auth, limit 100/min
+  read PackageVersion by id: auth
+  list PackageVersion where package: auth, page 50
+  delete PackageVersion: admin
+
+service Authors
+  create Author: auth, limit 10/min
+  read Author by id: public
+  list Author: auth, page 50
+
+rules PackagePolicy
+  deny delete Package
+  Package.name ~ "^@" requires org_membership
+
+guard PackageService
+  budget: 5.00/task
+  classify: internal
+  sanitize: all
+  timeout: 30 seconds
+  retry: 3 then escalate
+  audit: mutations
+
+guard VersionService
+  budget: 3.00/task
+  classify: confidential
+  sanitize: all
+  timeout: 60 seconds
+  audit: all
+
+guard AuthorService
+  budget: 2.00/task
+  classify: internal
+  sanitize: all
+  audit: mutations
+
+pipeline OnPackagePublished
+  when PackageVersion.published_at -> published_at
+  validate -> index_search -> update_stats -> notify author
+  on failure: retry 3 then escalate
+
+pipeline OnPackageDeprecated
+  when Package.status -> deprecated
+  notify_dependents -> update_search_index
+  on failure: retry 2 then rollback

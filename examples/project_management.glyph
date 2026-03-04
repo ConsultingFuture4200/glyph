@@ -1,0 +1,177 @@
+# Project Management Service — Phase D test fixture
+# Demonstrates: multiple tasks with different routing classes,
+# cross-service dependencies, context profile generation
+
+type Slug: text ~ slug
+type Dollars: float >= 0
+
+model Project [internal]
+  id: uuid key
+  name: text 1..200
+  slug: Slug unique
+  status: planning | active | paused | complete = planning
+  budget: Dollars
+  owner: -> User
+  created: timestamp = now
+
+model User [internal]
+  id: uuid key
+  name: text 1..100
+  email: text ~ email unique
+  role: admin | manager | developer | viewer = developer
+  created: timestamp = now
+
+model Task [internal, owned by user]
+  id: uuid key
+  project: -> Project
+  assignee: -> User optional
+  title: text 1..500
+  description: text optional
+  status: backlog | todo | in_progress | review | done = backlog
+  priority: critical | high | normal | low = normal
+  estimate_hours: float optional
+  created: timestamp = now
+
+model Comment [internal, owned by user]
+  id: uuid key
+  task: -> Task
+  author: -> User
+  body: text 1..5000
+  created: timestamp = now
+
+transition Project.status
+  planning -> active: require all_tasks_assigned
+  active -> paused: require manager, log
+  paused -> active: require manager
+  active -> complete: require all_tasks_done
+  _ -> _: deny
+
+transition Task.status
+  backlog -> todo: require assignee_set
+  todo -> in_progress: log
+  in_progress -> review: require tests_passing
+  review -> done: require reviewer_approved
+  review -> in_progress: log
+  _ -> _: deny
+
+service Projects
+  create Project: auth, limit 20/hour
+  read Project by id: auth
+  update Project by id: auth, role manager
+  list Project where status, owner: auth, page 25
+  transition Project.status
+
+service Tasks
+  create Task: auth
+  read Task by id: auth
+  update Task by id: auth
+  delete Task by id: auth, role manager
+  list Task where project, status, assignee: auth, page 50
+  search Task: auth
+  transition Task.status
+
+service Comments
+  create Comment: auth, limit 60/minute
+  read Comment by id: auth
+  list Comment where task: auth, page 100
+  delete Comment by id: admin
+
+rules ProjectPolicy
+  Project.budget > 50000 requires board_approval
+  deny delete Project
+
+rules TaskPolicy
+  Task.priority = critical requires manager
+  deny archive Task
+
+guard ProjectService
+  budget: 8.00/task
+  classify: internal
+  escalate above 15.00 to strategist
+  sanitize: all
+  timeout: 60 seconds
+  retry: 3 then escalate
+  audit: mutations
+
+guard TaskService
+  budget: 5.00/task
+  classify: internal
+  sanitize: all
+  timeout: 30 seconds
+  retry: 2 then fail
+  audit: mutations
+
+guard CommentService
+  budget: 2.00/task
+  classify: internal
+  sanitize: body
+  timeout: 15 seconds
+  audit: none
+
+pipeline OnTaskCompleted
+  when Task.status -> done
+  validate -> update_project_progress -> notify assignee -> log
+  on failure: retry 2 then escalate
+
+pipeline OnProjectComplete
+  when Project.status -> complete
+  generate_report -> notify owner -> archive
+  on failure: escalate
+
+# --- TASKS ---
+# These exercise different routing class inference paths
+
+task DesignProjectSchema [critical]
+  do: Design the data model and API schema for project management
+  accept: All models defined, relationships validated, schema reviewed
+  context: project, task, user, schema, data_model
+  budget: 12.00
+  route: architect
+
+task PlanMigrationStrategy [high]
+  do: Plan database migration strategy for project management tables
+  accept: Migration scripts reviewed, rollback plan documented, risk assessment complete
+  context: project, task, migration, infrastructure
+  budget: 15.00
+
+task ImplementProjectCRUD [normal]
+  do: Implement CRUD operations for Project model
+  accept: All endpoints work, validation passes, auth enforced
+  context: project
+  route: executor
+  parent: DesignProjectSchema
+  budget: 5.00
+
+task ImplementTaskCRUD [normal]
+  do: Implement CRUD operations for Task model
+  accept: All endpoints work, validation passes, auth enforced
+  context: task
+  parent: DesignProjectSchema
+  depends: ImplementProjectCRUD
+  budget: 5.00
+
+task ImplementCommentCRUD [low]
+  do: Implement CRUD for comments on tasks
+  accept: Comments created, listed by task, deleted by admin
+  context: comment, task
+  parent: DesignProjectSchema
+  depends: ImplementTaskCRUD
+  budget: 3.00
+
+task ReviewProjectSecurity [high]
+  do: Review and audit security configuration for all project services
+  accept: All guards validated, RLS policies verified, no data leaks
+  context: project, security, audit
+  budget: 8.00
+
+task SetupMonitoring [normal]
+  do: Configure monitoring dashboards and alert notifications for project service
+  accept: Alerts configured, dashboard exported, runbook written
+  context: monitoring, notification, alert
+  budget: 4.00
+
+task EvaluateScalingStrategy [high]
+  do: Evaluate scaling strategy and cost implications for project management at 10x growth
+  accept: Cost model validated, architecture decisions documented, roadmap updated
+  context: project, cost, scaling, strategy, roadmap
+  budget: 20.00
